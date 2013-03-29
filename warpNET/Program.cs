@@ -46,12 +46,10 @@ namespace Lancer
         Regex RContentLength = new Regex("\r\nContent-Length: ([0-9]+)\r\n");
         Regex RConnection = new Regex("\r\nConnection: (.+)\r\n");
 
-        IPAddress hostname;
         Int32 port;
         Queue<Object> queue = new Queue<Object>();
-        public Server(IPAddress hostname, Int32 port)
+        public Server(Int32 port)
         {
-            this.hostname = hostname;
             this.port = port;
         }
 
@@ -61,14 +59,14 @@ namespace Lancer
             socket.NoDelay = true;
             try
             {
-                socket.Bind(new System.Net.IPEndPoint(hostname, port));
+                socket.Bind(new IPEndPoint(IPAddress.Parse("[::1]"), port));
             }
             catch
             {
-                Console.WriteLine(String.Format("!!! Failed to bind server at [{0}:{1}]", hostname, port));
+                Console.WriteLine(String.Format("!!! Failed to bind server at port {0}.", port));
                 return;
             }
-            Console.WriteLine(String.Format("Server bound at [{0}:{1}].", hostname, port));
+            Console.WriteLine(String.Format("Server bound at port {0}.", port));
             socket.Listen(100);
 
             while (true)
@@ -232,6 +230,8 @@ namespace Lancer
                 socket.Close();
 
                 Console.WriteLine("Task done");
+                requestSocket.Dispose();
+                socket.Dispose();
             }
             catch (SocketException e)
             {
@@ -255,20 +255,31 @@ namespace Lancer
                 return defaultValue;
         }
 
+        static Boolean findOption(String optionname, String[] args)
+        {
+            List<String> argsList = args.ToList();
+            Int32 foundIndex = argsList.FindIndex((String s) => { if ((s[0] == '-' || s[0] == '/') && s.Substring(1) == optionname) return true; else return false; });
+            if (foundIndex != -1) return true;
+            else return false;
+        }
+
         static void Main(string[] args)
         {
-            IPAddress host;
+            if (findOption("?", args))
+            {
+                Console.WriteLine("USAGE:");
+                Console.WriteLine("\t lancer [/port PORTNUMBER]");
+            }
+
             UInt16 port;
-            try { host = IPAddress.Parse(findOptionValue("host", "[::1]", args)); }
-            catch { Console.WriteLine("Please input valid IP address"); return; }
-            try { port = Convert.ToUInt16(findOptionValue("host", "8080", args)); }
+            try { port = Convert.ToUInt16(findOptionValue("port", "8080", args)); }
             catch { Console.WriteLine("Please input valid port number (0-65535)"); return; }
 
 
             Console.WriteLine("(c)SaschaNaz");
             Console.WriteLine("Lancer, the ported version of warp.py");
             Console.WriteLine("");
-            Server server = new Server(host, port);
+            Server server = new Server(port);
             server.Start();
             return;
         }
