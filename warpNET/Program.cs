@@ -9,11 +9,11 @@ using System.Threading;
 using System.Text.RegularExpressions;
 using System.IO;
 
-namespace warpNET
+namespace Lancer
 {
     class Server
     {
-        Regex RHost = new Regex("(^:+):([0-9]{1,5})");
+        Regex RHost = new Regex("[^:+]{0,}:([0-9]{1,5})");
         Regex RContentLength = new Regex("\r\nContent-Length: ([0-9]+)\r\n");
         Regex RProxyConnection = new Regex("\r\nProxy-Connection: (.+)\r\n");
         Regex RConnection = new Regex("\r\nConnection: (.+)\r\n");
@@ -57,33 +57,77 @@ namespace warpNET
                 String proxyRecievedString = "";
 
                 Console.WriteLine("New task accepted");// (socket.RemoteEndPoint as IPEndPoint).Address);
-                String streamstr = "";
+                List<Byte> headerbytes = new List<Byte>();
                 MemoryStream contentStream = new MemoryStream();
                 //try
                 //{
-                while (true)
+                //String headerstr = "";
+                //while (true)
+                //{
+                //    Byte[] buffer = new Byte[1024];
+                //    //List<ArraySegment<Byte>> buffer = new List<ArraySegment<Byte>>();
+                //    socket.Receive(buffer);
+                //    String data = Encoding.UTF8.GetString(buffer);
+                //    headerstr += data.TrimEnd('\0');
+                //    if (data.Contains("\r\n\r\n"))
+                //        break;
+                //}
+                //Match lengthm = RContentLength.Match(headerstr);
+                //String content = "";
+                //if (lengthm.Groups.Count > 0 && lengthm.Groups[0].Value.Length != 0)
+                //{
+                //    Int32 length = Convert.ToInt32(lengthm.Groups[0].Value.Substring(18).TrimEnd('\r', '\n'));
+                //    content = headerstr.Split(new String[] { "\r\n\r\n" }, StringSplitOptions.None)[1];
+                //    while (length != content.Length)
+                //    {
+                //        Byte[] buffer = new Byte[1024];
+                //        socket.Receive(buffer);
+                //        content += Encoding.UTF8.GetString(buffer).TrimEnd('\0');
+                //    }
+                //    headerstr = headerstr.Split(new String[] { "\r\n\r\n" }, StringSplitOptions.None)[0] + "\r\n\r\n" + content;
+                //}
+
+                UInt16 endcounter = 0;
+                while (endcounter != 4)
                 {
                     Byte[] buffer = new Byte[1024];
                     //List<ArraySegment<Byte>> buffer = new List<ArraySegment<Byte>>();
-                    socket.Receive(buffer);
-                    String data = Encoding.UTF8.GetString(buffer);
-                    streamstr += data.TrimEnd('\0');
-                    if (data.Contains("\r\n\r\n"))
-                        break;
+                    Int32 received = socket.Receive(buffer);
+                    for (Int32 i = 0; i < received; i++)
+                    {
+                        if (endcounter != 4)
+                        {
+                            switch (buffer[i])
+                            {
+                                case 0x0D:
+                                    if (endcounter == 0 || endcounter == 2)
+                                        endcounter++;
+                                    break;
+                                case 0x0A:
+                                    if (endcounter == 1 || endcounter == 3)
+                                        endcounter++;
+                                    break;
+                                default:
+                                    endcounter = 0;
+                                    break;
+                            }
+                            headerbytes.Add(buffer[i]);
+                        }
+                        else
+                            contentStream.WriteByte(buffer[i]);
+                    }
                 }
-                Match lengthm = RContentLength.Match(streamstr);
-                String content = "";
+                String headerstr = Encoding.UTF8.GetString(headerbytes.ToArray());
+                Match lengthm = RContentLength.Match(headerstr);
                 if (lengthm.Groups.Count > 0 && lengthm.Groups[0].Value.Length != 0)
                 {
                     Int32 length = Convert.ToInt32(lengthm.Groups[0].Value.Substring(18).TrimEnd('\r', '\n'));
-                    content = streamstr.Split(new String[] { "\r\n\r\n" }, StringSplitOptions.None)[1];
-                    while (length != content.Length)
+                    while (length != contentStream.Length)
                     {
                         Byte[] buffer = new Byte[1024];
-                        socket.Receive(buffer);
-                        streamstr += Encoding.UTF8.GetString(buffer).TrimEnd('\0');
+                        Int32 received = socket.Receive(buffer);
+                        contentStream.Write(buffer, 0, received);
                     }
-                    streamstr = streamstr.Split(new String[] { "\r\n\r\n" }, StringSplitOptions.None)[0] + "\r\n\r\n" + content;
                 }
                 //}
                 //catch
@@ -91,14 +135,14 @@ namespace warpNET
 
                 //}
 
-                Match proxym = RProxyConnection.Match(streamstr);
+                Match proxym = RProxyConnection.Match(headerstr);
                 if (proxym.Groups.Count == 0)
                 {
                     Console.WriteLine("!!! Task rejected");
                     return;
                 }
 
-                String[] requests = streamstr.TrimEnd('\r', '\n').Split(new String[] { "\r\n" }, StringSplitOptions.None);
+                String[] requests = headerstr.TrimEnd('\r', '\n').Split(new String[] { "\r\n" }, StringSplitOptions.None);
                 if (requests.Length < 2)
                 {
                     Console.WriteLine("!!! Task rejected");
@@ -116,25 +160,31 @@ namespace warpNET
                         sRequests.Add(requests[i]);
                 }
 
-                Match connectionm = RConnection.Match(streamstr);
+                Match connectionm = RConnection.Match(headerstr);
                 if (connectionm.Groups.Count == 0)
                     sRequests.Add(String.Format("Connection: {0}", connectionm.Groups[0].Value));
                 else
                     sRequests.Add("Connection: close");
 
-                String path = new Uri(heads[1]).PathAndQuery;
+                Uri targeturi;
+                if (heads[1].Contains("://"))
+                    targeturi = new Uri(heads[1]);
+                else
+                    targeturi = new Uri("protocol://" + heads[1]);//just for getting local path. currently no support for HTTPS. HTTP tunneling required.
+                String path = targeturi.PathAndQuery;
 
                 Console.WriteLine(String.Format("Process - {0}", requests[0]));
 
                 String newHead = String.Join(" ", heads[0], path, heads[2]);
 
-                Match hostm = RHost.Match(proxyHost);
+                Match hostm = RHost.Match(heads[1]);
                 String host;
                 UInt16 port;
                 if (hostm.Groups.Count > 0 && hostm.Groups[0].Value.Length != 0)
                 {
-                    host = hostm.Groups[0].Value;
-                    port = Convert.ToUInt16(hostm.Groups[1].Value);
+                    String[] splitTarget = hostm.Groups[0].Value.Split(':');
+                    host = splitTarget[0];
+                    port = Convert.ToUInt16(splitTarget[1]);
                 }
                 else
                 {
@@ -184,25 +234,22 @@ namespace warpNET
                     proxySentString += String.Join("\r\n", sRequests);
                     requestSocket.Send(Encoding.UTF8.GetBytes("\r\n\r\n"));
                     proxySentString += "\r\n\r\n";
-                    requestSocket.Send(Encoding.UTF8.GetBytes(content));
-                    proxySentString += content;
+                    //requestSocket.Send(Encoding.UTF8.GetBytes(content));
+                    //proxySentString += content;
                     //}
                     //catch
                     //{
 
                     //}
 
+                    //Int32 
                     while (true)
                     {
                         Byte[] buffer = new Byte[1024];
-                        requestSocket.Receive(buffer);
-                        String data = Encoding.UTF8.GetString(buffer).TrimEnd('\0');
-                        if (data.Length > 0)
-                        {
-                            proxyRecievedString += data;
-                            socket.Send(Encoding.UTF8.GetBytes(data));
-                        }
-                        else
+                        Int32 received = requestSocket.Receive(buffer);
+                        String str = Encoding.UTF8.GetString(buffer, 0, received);
+                        socket.Send(buffer, received, SocketFlags.None);
+                        if (received == 0)
                             break;
                     }
                     requestSocket.Close();
@@ -218,7 +265,7 @@ namespace warpNET
                 System.Diagnostics.Debug.WriteLine(
                     "---ChunkStart---\r\n"
                     + "---Requested---\r\n"
-                    + streamstr
+                    + headerstr
                     + "------\r\n"
                     + "---Sent---\r\n"
                     + proxySentString
