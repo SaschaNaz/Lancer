@@ -68,7 +68,7 @@ namespace Lancer
                 Console.WriteLine(String.Format("!!! Failed to bind server at [{0}:{1}]", hostname, port));
                 return;
             }
-            Console.WriteLine(String.Format("Server binded at [{0}:{1}].", hostname, port));
+            Console.WriteLine(String.Format("Server bound at [{0}:{1}].", hostname, port));
             socket.Listen(100);
 
             while (true)
@@ -264,6 +264,10 @@ namespace Lancer
             try { port = Convert.ToUInt16(findOptionValue("host", "8080", args)); }
             catch { Console.WriteLine("Please input valid port number (0-65535)"); return; }
 
+
+            Console.WriteLine("(c)SaschaNaz");
+            Console.WriteLine("Lancer, the ported version of warp.py");
+            Console.WriteLine("");
             Server server = new Server(host, port);
             server.Start();
             return;
