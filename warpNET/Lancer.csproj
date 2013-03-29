@@ -7,8 +7,8 @@
     <ProjectGuid>{7F54C751-D878-4CE8-83CA-307D55EBB1DA}</ProjectGuid>
     <OutputType>Exe</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>warpNET</RootNamespace>
-    <AssemblyName>warpNET</AssemblyName>
+    <RootNamespace>Lancer</RootNamespace>
+    <AssemblyName>Lancer</AssemblyName>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <SccProjectName>SAK</SccProjectName>
