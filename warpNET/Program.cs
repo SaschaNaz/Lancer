@@ -15,7 +15,6 @@ namespace Lancer
     {
         Regex RHost = new Regex("[^:+]{0,}:([0-9]{1,5})");
         Regex RContentLength = new Regex("\r\nContent-Length: ([0-9]+)\r\n");
-        Regex RProxyConnection = new Regex("\r\nProxy-Connection: (.+)\r\n");
         Regex RConnection = new Regex("\r\nConnection: (.+)\r\n");
 
         IPAddress hostname;
@@ -45,48 +44,22 @@ namespace Lancer
 
             while (true)
             {
-                Request(socket.Accept());
+                Socket acceptedSocket = socket.Accept();
+                new Task(async delegate()
+                {
+                    await Request(acceptedSocket);
+                }).Start();
             }
         }
 
-        public async void Request(Socket socket)
+        public async Task Request(Socket socket)
         {
-            await Task.Run(async delegate()
+            Console.WriteLine("New task accepted");// (socket.RemoteEndPoint as IPEndPoint).Address);
+            List<Byte> headerbytes = new List<Byte>();
+            MemoryStream contentStream = new MemoryStream();
+
+            try
             {
-                String proxySentString = "";
-                String proxyRecievedString = "";
-
-                Console.WriteLine("New task accepted");// (socket.RemoteEndPoint as IPEndPoint).Address);
-                List<Byte> headerbytes = new List<Byte>();
-                MemoryStream contentStream = new MemoryStream();
-                //try
-                //{
-                //String headerstr = "";
-                //while (true)
-                //{
-                //    Byte[] buffer = new Byte[1024];
-                //    //List<ArraySegment<Byte>> buffer = new List<ArraySegment<Byte>>();
-                //    socket.Receive(buffer);
-                //    String data = Encoding.UTF8.GetString(buffer);
-                //    headerstr += data.TrimEnd('\0');
-                //    if (data.Contains("\r\n\r\n"))
-                //        break;
-                //}
-                //Match lengthm = RContentLength.Match(headerstr);
-                //String content = "";
-                //if (lengthm.Groups.Count > 0 && lengthm.Groups[0].Value.Length != 0)
-                //{
-                //    Int32 length = Convert.ToInt32(lengthm.Groups[0].Value.Substring(18).TrimEnd('\r', '\n'));
-                //    content = headerstr.Split(new String[] { "\r\n\r\n" }, StringSplitOptions.None)[1];
-                //    while (length != content.Length)
-                //    {
-                //        Byte[] buffer = new Byte[1024];
-                //        socket.Receive(buffer);
-                //        content += Encoding.UTF8.GetString(buffer).TrimEnd('\0');
-                //    }
-                //    headerstr = headerstr.Split(new String[] { "\r\n\r\n" }, StringSplitOptions.None)[0] + "\r\n\r\n" + content;
-                //}
-
                 UInt16 endcounter = 0;
                 while (endcounter != 4)
                 {
@@ -134,13 +107,6 @@ namespace Lancer
                 //{
 
                 //}
-
-                Match proxym = RProxyConnection.Match(headerstr);
-                if (proxym.Groups.Count == 0)
-                {
-                    Console.WriteLine("!!! Task rejected");
-                    return;
-                }
 
                 String[] requests = headerstr.TrimEnd('\r', '\n').Split(new String[] { "\r\n" }, StringSplitOptions.None);
                 if (requests.Length < 2)
@@ -190,92 +156,59 @@ namespace Lancer
                 {
                     host = proxyHost;
                     port = 80;
-                    proxyHost = proxyHost + ":80";
                 }
+                Socket requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
+                requestSocket.Connect(host, port);
 
-
-                try
+                requestSocket.Send(Encoding.UTF8.GetBytes(newHead + "\r\nHost: "));
                 {
-                    Socket requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
-                    requestSocket.Connect(host, port);
-
-                    requestSocket.Send(Encoding.UTF8.GetBytes(newHead + "\r\n"));
-                    proxySentString += newHead + "\r\n";
-
-                    await Task.Delay(200);
-
-                    requestSocket.Send(Encoding.UTF8.GetBytes("Host: "));
-                    proxySentString += "Host: ";
+                    Random r = new Random();
+                    String remaining = proxyHost;
+                    Int32 i = 1;
+                    while (remaining.Length > 0)
                     {
-                        Random r = new Random();
-                        String remaining = proxyHost;
-                        Int32 i = 1;
-                        while (remaining.Length > 0)
+                        await Task.Delay(r.Next(2, 4) * 10);
+                        if (remaining.Length > i)
                         {
-                            await Task.Delay(r.Next(2, 4) * 100);
-                            if (remaining.Length > i)
-                            {
-                                requestSocket.Send(Encoding.UTF8.GetBytes(remaining.Substring(0, i)));
-                                proxySentString += remaining.Substring(0, i);
-                                remaining = remaining.Substring(i);
-                            }
-                            else
-                            {
-                                requestSocket.Send(Encoding.UTF8.GetBytes(remaining));
-                                proxySentString += remaining;
-                                remaining = String.Empty;
-                            }
-                            i = r.Next(2, 5);
+                            requestSocket.Send(Encoding.UTF8.GetBytes(remaining.Substring(0, i)));
+                            remaining = remaining.Substring(i);
                         }
+                        else
+                        {
+                            requestSocket.Send(Encoding.UTF8.GetBytes(remaining));
+                            remaining = String.Empty;
+                        }
+                        i = r.Next(2, 5);
                     }
-                    requestSocket.Send(Encoding.UTF8.GetBytes("\r\n"));
-                    proxySentString += "\r\n";
-                    requestSocket.Send(Encoding.UTF8.GetBytes(String.Join("\r\n", sRequests)));
-                    proxySentString += String.Join("\r\n", sRequests);
-                    requestSocket.Send(Encoding.UTF8.GetBytes("\r\n\r\n"));
-                    proxySentString += "\r\n\r\n";
-                    //requestSocket.Send(Encoding.UTF8.GetBytes(content));
-                    //proxySentString += content;
-                    //}
-                    //catch
-                    //{
-
-                    //}
-
-                    //Int32 
-                    while (true)
-                    {
-                        Byte[] buffer = new Byte[1024];
-                        Int32 received = requestSocket.Receive(buffer);
-                        String str = Encoding.UTF8.GetString(buffer, 0, received);
-                        socket.Send(buffer, received, SocketFlags.None);
-                        if (received == 0)
-                            break;
-                    }
-                    requestSocket.Close();
-                    socket.Close();
                 }
-                catch (SocketException e)
+                requestSocket.Send(Encoding.UTF8.GetBytes("\r\n" + String.Join("\r\n", sRequests) + "\r\n\r\n"));
+                //requestSocket.Send(Encoding.UTF8.GetBytes(content));
+                //}
+                //catch
+                //{
+
+                //}
+
+                //Int32 
+                while (true)
                 {
-                    Console.WriteLine(e.Message);
+                    Byte[] buffer = new Byte[1024];
+                    Int32 received = requestSocket.Receive(buffer);
+                    String str = Encoding.UTF8.GetString(buffer, 0, received);
+                    socket.Send(buffer, received, SocketFlags.None);
+                    if (received == 0)
+                        break;
                 }
+                requestSocket.Close();
+                socket.Close();
 
                 Console.WriteLine("Task done");
-
-                System.Diagnostics.Debug.WriteLine(
-                    "---ChunkStart---\r\n"
-                    + "---Requested---\r\n"
-                    + headerstr
-                    + "------\r\n"
-                    + "---Sent---\r\n"
-                    + proxySentString
-                    + "------\r\n"
-                    + "---Received---\r\n"
-                    + proxyRecievedString + "\r\n"
-                    + "------\r\n"
-                    + "---ChunkEnd--");
-                //String path = heads[1].Substring(pro
-            });
+            }
+            catch (SocketException e)
+            {
+                Console.WriteLine(e.Message);
+            }
+            //String path = heads[1].Substring(pro
         }
     }
 
