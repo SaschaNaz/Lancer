@@ -24,8 +24,10 @@
  * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
  * OTHER DEALINGS IN THE SOFTWARE.
+ * 
+ * HTTP Tunneling is implemented as:
+ * http://www.web-cache.com/Writings/Internet-Drafts/draft-luotonen-web-proxy-tunneling-01.txt
  */
-
 
 using System;
 using System.Collections.Generic;
@@ -80,45 +82,50 @@ namespace Lancer
             }
         }
 
+        public String receiveHttpMessage(Socket socket, MemoryStream stream)
+        {
+            List<Byte> headerbytes = new List<Byte>();
+            UInt16 endcounter = 0;
+            while (endcounter != 4)
+            {
+                Byte[] buffer = new Byte[1024];
+                //List<ArraySegment<Byte>> buffer = new List<ArraySegment<Byte>>();
+                Int32 received = socket.Receive(buffer);
+                for (Int32 i = 0; i < received; i++)
+                {
+                    if (endcounter != 4)
+                    {
+                        switch (buffer[i])
+                        {
+                            case 0x0D:
+                                if (endcounter == 0 || endcounter == 2)
+                                    endcounter++;
+                                break;
+                            case 0x0A:
+                                if (endcounter == 1 || endcounter == 3)
+                                    endcounter++;
+                                break;
+                            default:
+                                endcounter = 0;
+                                break;
+                        }
+                        headerbytes.Add(buffer[i]);
+                    }
+                    else
+                        stream.WriteByte(buffer[i]);
+                }
+            }
+            return Encoding.UTF8.GetString(headerbytes.ToArray());
+        }
+
         public async Task Request(Socket socket)
         {
             Console.WriteLine("New task accepted");// (socket.RemoteEndPoint as IPEndPoint).Address);
-            List<Byte> headerbytes = new List<Byte>();
             MemoryStream contentStream = new MemoryStream();
-
+            String headerstr = receiveHttpMessage(socket, contentStream);
             try
             {
-                UInt16 endcounter = 0;
-                while (endcounter != 4)
-                {
-                    Byte[] buffer = new Byte[1024];
-                    //List<ArraySegment<Byte>> buffer = new List<ArraySegment<Byte>>();
-                    Int32 received = socket.Receive(buffer);
-                    for (Int32 i = 0; i < received; i++)
-                    {
-                        if (endcounter != 4)
-                        {
-                            switch (buffer[i])
-                            {
-                                case 0x0D:
-                                    if (endcounter == 0 || endcounter == 2)
-                                        endcounter++;
-                                    break;
-                                case 0x0A:
-                                    if (endcounter == 1 || endcounter == 3)
-                                        endcounter++;
-                                    break;
-                                default:
-                                    endcounter = 0;
-                                    break;
-                            }
-                            headerbytes.Add(buffer[i]);
-                        }
-                        else
-                            contentStream.WriteByte(buffer[i]);
-                    }
-                }
-                String headerstr = Encoding.UTF8.GetString(headerbytes.ToArray());
+                
                 Match lengthm = RContentLength.Match(headerstr);
                 if (lengthm.Groups.Count > 0 && lengthm.Groups[0].Value.Length != 0)
                 {
