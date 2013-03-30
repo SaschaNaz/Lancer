@@ -137,68 +137,113 @@ namespace Lancer
             return headerstr;
         }
 
-        void makeDataTunnel(Socket requestSocket, Socket remoteSocket)
+        async Task makeDataTunnel(Socket localSocket, Socket remoteSocket)
         {
-            new Task(delegate()
+            Int64 transferred;
+            do
             {
-                try
+                transferred = 0;
                 {
-                    while (true)
+                    MemoryStream stream = await socketReceiveAsyncWrapper2(localSocket);
+                    if (stream.Length != 0)
                     {
-                        Byte[] buffer = new Byte[1024];
-                        Int32 received = requestSocket.Receive(buffer);
-                        remoteSocket.Send(buffer, 0, received, SocketFlags.None);
+                        transferred += stream.Length;
+                        await writeStreamToSocket(remoteSocket, stream);
                     }
                 }
-                catch (SocketException)
+                //remoteSocket.Send(buffer, 0, buffer.Length, SocketFlags.None);
                 {
-                    requestSocket.Close();
-                    requestSocket.Dispose();
-                    remoteSocket.Close();
-                    remoteSocket.Dispose();
-                    Console.WriteLine("HTTPS data tunnel closed");
-                }
-                catch (ObjectDisposedException)
-                {
-
-                }
-            }).Start();
-            new Task(delegate()
-            {
-                try
-                {
-                    while (true)
+                    MemoryStream stream = await socketReceiveAsyncWrapper2(remoteSocket);
+                    if (stream.Length != 0)
                     {
-                        Byte[] buffer = new Byte[1024];
-                        Int32 received = remoteSocket.Receive(buffer);
-                        requestSocket.Send(buffer, 0, received, SocketFlags.None);
+                        transferred += stream.Length;
+                        await writeStreamToSocket(localSocket, stream);
                     }
                 }
-                catch (SocketException)
-                {
-                    requestSocket.Close();
-                    requestSocket.Dispose();
-                    remoteSocket.Close();
-                    remoteSocket.Dispose();
-                    Console.WriteLine("HTTPS data tunnel closed");
-                }
-                catch (ObjectDisposedException)
-                {
-
-                }
-            }).Start();
+                //Byte[] buffer = new Byte[1024];
+                //Int32 received = remoteSocket.Receive(buffer);
+                //if (received != 0)
+                //    requestSocket.Send(buffer, 0, received, SocketFlags.None);
+                //else
+                //    Task.Delay(0);
+            }
+            while (transferred != 0);
+            localSocket.Close();
+            localSocket.Dispose();
+            remoteSocket.Close();
+            remoteSocket.Dispose();
+            Console.WriteLine("HTTPS data tunnel closed");
         }
 
-        void writeStreamToSocket(Socket socket, MemoryStream stream)
+        async Task writeStreamToSocket(Socket socket, MemoryStream stream)
         {
             while (true)
             {
                 Byte[] buffer = new Byte[1024];
-                Int32 read = stream.Read(buffer, 0, 1024);
+                Int32 read = await stream.ReadAsync(buffer, 0, 1024);
                 socket.Send(buffer, read, SocketFlags.None);
                 if (read == 0)
                     break;
             }
+        }
+
+        Task<SocketAsyncEventArgs> socketReceiveAsyncWrapper(Socket socket)
+        {
+            var tcs = new TaskCompletionSource<SocketAsyncEventArgs>();
+            SocketAsyncEventArgs e = new SocketAsyncEventArgs();
+            e.SetBuffer(new Byte[1024], 0, 1024);
+            if (socket.ReceiveAsync(e))
+                tcs.SetResult(e);
+            else
+                e.Completed += new EventHandler<SocketAsyncEventArgs>(delegate(Object sender, SocketAsyncEventArgs e2)
+                {
+                    tcs.SetResult(e2);
+                });
+            return tcs.Task;
+        }
+
+        async Task<MemoryStream> socketReceiveAsyncWrapper2(Socket socket)
+        {
+            MemoryStream stream = new MemoryStream();
+            Boolean fullreceived;
+            do
+            {
+                fullreceived = await socketReceiveAsyncWrapper3(socket, stream);
+            }
+            while (!fullreceived);
+            return stream;
+        }
+
+        Task<Boolean> socketReceiveAsyncWrapper3(Socket socket, MemoryStream stream)
+        {
+            var tcs = new TaskCompletionSource<Boolean>();
+            Byte[] buffer = new Byte[1024];
+            socket.BeginReceive(buffer, 0, buffer.Length, SocketFlags.None,
+                async delegate(IAsyncResult r)
+                {
+                    Int32 received = socket.EndReceive(r);
+                    await stream.WriteAsync(buffer, 0, received);
+                    if (received == 1024)
+                        tcs.SetResult(false);
+                    else
+                        tcs.SetResult(true);
+                }, null);
+            return tcs.Task;
+        }
+
+        Task<SocketAsyncEventArgs> socketSendAsyncWrapper(Socket socket, Byte[] buffer, Int32 count)
+        {
+            var tcs = new TaskCompletionSource<SocketAsyncEventArgs>();
+            SocketAsyncEventArgs e = new SocketAsyncEventArgs();
+            e.SetBuffer(buffer, 0, count);
+            if (socket.SendAsync(e))
+                tcs.SetResult(e);
+            else
+                e.Completed += new EventHandler<SocketAsyncEventArgs>(delegate(Object sender, SocketAsyncEventArgs e2)
+                {
+                    tcs.SetResult(e2);
+                });
+            return tcs.Task;
         }
 
         public async Task Request(Socket socket)
@@ -225,8 +270,8 @@ namespace Lancer
                 socket.Send(Encoding.UTF8.GetBytes("HTTP/1.0 200 Connection established\r\n\r\n"));
                 Socket requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
                 requestSocket.Connect(targeturi.Host, targeturi.Port);
-                makeDataTunnel(socket, requestSocket);
                 Console.WriteLine("HTTPS data tunnel opened");
+                await makeDataTunnel(socket, requestSocket);
             }
             else
             {
@@ -292,7 +337,7 @@ namespace Lancer
                     }
                 }
                 requestSocket.Send(Encoding.UTF8.GetBytes("\r\n" + String.Join("\r\n", sRequests) + "\r\n\r\n"));
-                writeStreamToSocket(socket, contentStream);
+                await writeStreamToSocket(socket, contentStream);
 
                 while (true)
                 {
