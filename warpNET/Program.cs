@@ -46,10 +46,11 @@ namespace Lancer
         Regex RContentLength = new Regex("\r\nContent-Length: ([0-9]+)\r\n");
         Regex RConnection = new Regex("\r\nConnection: (.+)\r\n");
 
+        IPAddress hostname;
         Int32 port;
-        Queue<Object> queue = new Queue<Object>();
-        public Server(Int32 port)
+        public Server(IPAddress hostname, Int32 port)
         {
+            this.hostname = hostname;
             this.port = port;
         }
 
@@ -59,15 +60,15 @@ namespace Lancer
             socket.NoDelay = true;
             try
             {
-                socket.Bind(new IPEndPoint(IPAddress.Parse("[::1]"), port));
+                socket.Bind(new System.Net.IPEndPoint(hostname, port));//[::1]
             }
             catch
             {
-                Console.WriteLine(String.Format("!!! Failed to bind server at port {0}.", port));
+                Console.WriteLine(String.Format("!!! Failed to bind server at [{0}:{1}]", hostname, port)); 
                 return;
             }
-            Console.WriteLine(String.Format("Server bound at port {0}.", port));
-            socket.Listen(100);
+            Console.WriteLine(String.Format("Server bound at [{0}:{1}].", hostname, port)); 
+            socket.Listen(128);
 
             while (true)
             {
@@ -268,10 +269,13 @@ namespace Lancer
             if (findOption("?", args))
             {
                 Console.WriteLine("USAGE:");
-                Console.WriteLine("\t lancer [/port PORTNUMBER]");
+                Console.WriteLine("\t lancer [/host IPADDRESS] [/port PORTNUMBER]");
             }
 
+            IPAddress host;
             UInt16 port;
+            try { host = IPAddress.Parse(findOptionValue("host", "127.0.0.1", args)); }
+            catch { Console.WriteLine("Please input valid IP address"); return; }  
             try { port = Convert.ToUInt16(findOptionValue("port", "8080", args)); }
             catch { Console.WriteLine("Please input valid port number (0-65535)"); return; }
 
@@ -279,7 +283,7 @@ namespace Lancer
             Console.WriteLine("(c)SaschaNaz");
             Console.WriteLine("Lancer, the ported version of warp.py");
             Console.WriteLine("");
-            Server server = new Server(port);
+            Server server = new Server(host, port);
             server.Start();
             return;
         }
