@@ -77,12 +77,19 @@ namespace Lancer
                 Socket acceptedSocket = socket.Accept();
                 new Task(async delegate()
                 {
-                    await Request(acceptedSocket);
+                    try
+                    {
+                        await Request(acceptedSocket);
+                    }
+                    catch (SocketException e)
+                    {
+                        Console.WriteLine(e.Message);
+                    }
                 }).Start();
             }
         }
 
-        public String receiveHttpMessage(Socket socket, MemoryStream stream)
+        String receiveHttpMessage(Socket socket, MemoryStream stream)
         {
             List<Byte> headerbytes = new List<Byte>();
             UInt16 endcounter = 0;
@@ -115,7 +122,83 @@ namespace Lancer
                         stream.WriteByte(buffer[i]);
                 }
             }
-            return Encoding.UTF8.GetString(headerbytes.ToArray());
+            String headerstr = Encoding.UTF8.GetString(headerbytes.ToArray());
+            Match lengthm = RContentLength.Match(headerstr);
+            if (lengthm.Groups.Count > 0 && lengthm.Groups[0].Value.Length != 0)
+            {
+                Int32 length = Convert.ToInt32(lengthm.Groups[0].Value.Substring(18).TrimEnd('\r', '\n'));
+                while (length != stream.Length)
+                {
+                    Byte[] buffer = new Byte[1024];
+                    Int32 received = socket.Receive(buffer);
+                    stream.Write(buffer, 0, received);
+                }
+            }
+            return headerstr;
+        }
+
+        void makeDataTunnel(Socket requestSocket, Socket remoteSocket)
+        {
+            new Task(delegate()
+            {
+                try
+                {
+                    while (true)
+                    {
+                        Byte[] buffer = new Byte[1024];
+                        Int32 received = requestSocket.Receive(buffer);
+                        remoteSocket.Send(buffer, 0, received, SocketFlags.None);
+                    }
+                }
+                catch (SocketException)
+                {
+                    requestSocket.Close();
+                    requestSocket.Dispose();
+                    remoteSocket.Close();
+                    remoteSocket.Dispose();
+                    Console.WriteLine("HTTPS data tunnel closed");
+                }
+                catch (ObjectDisposedException)
+                {
+
+                }
+            }).Start();
+            new Task(delegate()
+            {
+                try
+                {
+                    while (true)
+                    {
+                        Byte[] buffer = new Byte[1024];
+                        Int32 received = remoteSocket.Receive(buffer);
+                        requestSocket.Send(buffer, 0, received, SocketFlags.None);
+                    }
+                }
+                catch (SocketException)
+                {
+                    requestSocket.Close();
+                    requestSocket.Dispose();
+                    remoteSocket.Close();
+                    remoteSocket.Dispose();
+                    Console.WriteLine("HTTPS data tunnel closed");
+                }
+                catch (ObjectDisposedException)
+                {
+
+                }
+            }).Start();
+        }
+
+        void writeStreamToSocket(Socket socket, MemoryStream stream)
+        {
+            while (true)
+            {
+                Byte[] buffer = new Byte[1024];
+                Int32 read = stream.Read(buffer, 0, 1024);
+                socket.Send(buffer, read, SocketFlags.None);
+                if (read == 0)
+                    break;
+            }
         }
 
         public async Task Request(Socket socket)
@@ -123,34 +206,31 @@ namespace Lancer
             Console.WriteLine("New task accepted");// (socket.RemoteEndPoint as IPEndPoint).Address);
             MemoryStream contentStream = new MemoryStream();
             String headerstr = receiveHttpMessage(socket, contentStream);
-            try
+
+            String[] requests = headerstr.TrimEnd('\r', '\n').Split(new String[] { "\r\n" }, StringSplitOptions.None);
+            if (requests.Length < 2)
             {
-                
-                Match lengthm = RContentLength.Match(headerstr);
-                if (lengthm.Groups.Count > 0 && lengthm.Groups[0].Value.Length != 0)
-                {
-                    Int32 length = Convert.ToInt32(lengthm.Groups[0].Value.Substring(18).TrimEnd('\r', '\n'));
-                    while (length != contentStream.Length)
-                    {
-                        Byte[] buffer = new Byte[1024];
-                        Int32 received = socket.Receive(buffer);
-                        contentStream.Write(buffer, 0, received);
-                    }
-                }
-                //}
-                //catch
-                //{
+                Console.WriteLine("!!! Task rejected");
+                return;
+            }
 
-                //}
-
-                String[] requests = headerstr.TrimEnd('\r', '\n').Split(new String[] { "\r\n" }, StringSplitOptions.None);
-                if (requests.Length < 2)
-                {
-                    Console.WriteLine("!!! Task rejected");
-                    return;
-                }
-
-                String[] heads = requests[0].Split(' ');
+            String[] heads = requests[0].Split(' ');
+            Uri targeturi;
+            if (heads[1].Contains("://"))
+                targeturi = new Uri(heads[1]);
+            else
+                targeturi = new Uri("protocol://" + heads[1]);//just for getting local path. currently no support for HTTPS. HTTP tunneling required.
+            if (heads[0] == "CONNECT")
+            {
+                socket.Send(Encoding.UTF8.GetBytes("HTTP/1.0 200 Connection established\r\n\r\n"));
+                Socket requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
+                requestSocket.Connect(targeturi.Host, targeturi.Port);
+                makeDataTunnel(socket, requestSocket);
+                Console.WriteLine("HTTPS data tunnel opened");
+            }
+            else
+            {
+                #region data tunneling
                 String proxyHost = String.Empty;
                 List<String> sRequests = new List<String>();
                 for (Int32 i = 1; i < requests.Length; i++)
@@ -167,11 +247,6 @@ namespace Lancer
                 else
                     sRequests.Add("Connection: close");
 
-                Uri targeturi;
-                if (heads[1].Contains("://"))
-                    targeturi = new Uri(heads[1]);
-                else
-                    targeturi = new Uri("protocol://" + heads[1]);//just for getting local path. currently no support for HTTPS. HTTP tunneling required.
                 String path = targeturi.PathAndQuery;
 
                 Console.WriteLine(String.Format("Process - {0}", requests[0]));
@@ -202,7 +277,7 @@ namespace Lancer
                     Int32 i = 1;
                     while (remaining.Length > 0)
                     {
-                        await Task.Delay(r.Next(2, 4) * 10);
+                        await Task.Delay(r.Next(2, 4));
                         if (remaining.Length > i)
                         {
                             requestSocket.Send(Encoding.UTF8.GetBytes(remaining.Substring(0, i)));
@@ -217,35 +292,25 @@ namespace Lancer
                     }
                 }
                 requestSocket.Send(Encoding.UTF8.GetBytes("\r\n" + String.Join("\r\n", sRequests) + "\r\n\r\n"));
-                //requestSocket.Send(Encoding.UTF8.GetBytes(content));
-                //}
-                //catch
-                //{
+                writeStreamToSocket(socket, contentStream);
 
-                //}
-
-                //Int32 
                 while (true)
                 {
                     Byte[] buffer = new Byte[1024];
                     Int32 received = requestSocket.Receive(buffer);
-                    String str = Encoding.UTF8.GetString(buffer, 0, received);
                     socket.Send(buffer, received, SocketFlags.None);
                     if (received == 0)
                         break;
                 }
                 requestSocket.Close();
-                socket.Close();
+                requestSocket.Dispose();
+                #endregion
 
                 Console.WriteLine("Task done");
-                requestSocket.Dispose();
+                socket.Close();
                 socket.Dispose();
+                contentStream.Dispose();
             }
-            catch (SocketException e)
-            {
-                Console.WriteLine(e.Message);
-            }
-            //String path = heads[1].Substring(pro
         }
     }
 
