@@ -141,45 +141,49 @@ namespace Lancer
         void makeDataTunnel(Socket localSocket, Socket remoteSocket)
         {
             Parallel.Invoke(
-            delegate()
+            async delegate()
             {
-                socketOneWayLink(localSocket, remoteSocket);
-            },
-            delegate()
-            {
-                socketOneWayLink(remoteSocket, localSocket);
-            });
-        }
-
-        async void socketOneWayLink(Socket sender, Socket receiver)
-        {
-            try
-            {
-                while (true)
+                try
                 {
-                    Byte[] buffer = new Byte[1024];
-                    Int32 received = sender.Receive(buffer, 1024, SocketFlags.None);
-                    if (received != 0)
-                        receiver.Send(buffer, 0, received, SocketFlags.None);
-                    else await Task.Delay(200);
+                    while (true)
+                    {
+                        if (localSocket.Available > 0 || remoteSocket.Available > 0)
+                        {
+                            Byte[] buffer = new Byte[1024];
+                            if (localSocket.Available > 0)
+                            {
+                                Int32 received = localSocket.Receive(buffer, 1024, SocketFlags.None);
+                                if (received != 0)
+                                    remoteSocket.Send(buffer, 0, received, SocketFlags.None);
+                            }
+                            if (remoteSocket.Available > 0)
+                            {
+                                Int32 received = remoteSocket.Receive(buffer, 1024, SocketFlags.None);
+                                if (received != 0)
+                                    localSocket.Send(buffer, 0, received, SocketFlags.None);
+                            }
+                        }
+                        else await Task.Delay(200);
+                    }
                 }
-            }
-            catch (SocketException)
-            {
-                sender.Close();
-                receiver.Close();
-                sender.Dispose();
-                receiver.Dispose();
-                Console.WriteLine("HTTPS data tunnel closed");
-            }
-            catch (ObjectDisposedException)
-            {
+                catch (SocketException)
+                {
+                    localSocket.Close();
+                    remoteSocket.Close();
+                    localSocket.Dispose();
+                    remoteSocket.Dispose();
+                    Console.WriteLine("HTTPS data tunnel closed");
+                }
+                catch (ObjectDisposedException)
+                {
 
-            }
+                }
+            });
         }
 
         async Task writeStreamToSocket(Socket socket, MemoryStream stream)
         {
+            stream.Position = 0;
             while (true)
             {
                 Byte[] buffer = new Byte[1024];
@@ -197,11 +201,6 @@ namespace Lancer
             String headerstr = receiveHttpMessage(socket, contentStream);
 
             String[] requests = headerstr.TrimEnd('\r', '\n').Split(new String[] { "\r\n" }, StringSplitOptions.None);
-            if (requests.Length < 2)
-            {
-                Console.WriteLine("!!! Task rejected");
-                return;
-            }
 
             String[] heads = requests[0].Split(' ');
             Uri targeturi;
@@ -215,7 +214,7 @@ namespace Lancer
                 Socket requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
                 requestSocket.NoDelay = true;
                 requestSocket.Connect(targeturi.Host, targeturi.Port);
-                Console.WriteLine("HTTPS data tunnel opened");
+                Console.WriteLine(String.Format("HTTPS data tunnel opened: {0}", heads[1]));
                 makeDataTunnel(socket, requestSocket);
             }
             else
@@ -283,7 +282,8 @@ namespace Lancer
                     }
                 }
                 requestSocket.Send(Encoding.UTF8.GetBytes("\r\n" + String.Join("\r\n", sRequests) + "\r\n\r\n"));
-                await writeStreamToSocket(socket, contentStream);
+                if (contentStream.Length > 0)
+                    await writeStreamToSocket(requestSocket, contentStream);
 
                 while (true)
                 {
