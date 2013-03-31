@@ -49,6 +49,7 @@ namespace Lancer
 
         IPAddress hostname;
         Int32 port;
+        Random r = new Random();
         public Server(IPAddress hostname, Int32 port)
         {
             this.hostname = hostname;
@@ -59,7 +60,6 @@ namespace Lancer
         {
             Socket socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
             socket.NoDelay = true;
-            socket.Blocking = true;
             try
             {
                 socket.Bind(new System.Net.IPEndPoint(hostname, port));//[::1]
@@ -75,6 +75,7 @@ namespace Lancer
             while (true)
             {
                 Socket acceptedSocket = socket.Accept();
+                acceptedSocket.ReceiveTimeout = acceptedSocket.SendTimeout = 60000;
                 new Task(async delegate()
                 {
                     try
@@ -137,47 +138,39 @@ namespace Lancer
             return headerstr;
         }
 
-        void makeDataTunnel(Socket localSocket, Socket remoteSocket)
+        async Task makeDataTunnel(Socket localSocket, Socket remoteSocket, Int32 timeout)
         {
-            Parallel.Invoke(
-            async delegate()
+            DateTime lastRespondedTime = DateTime.Now;
+            //Parallel.Invoke(
+            //async delegate()
+            //{
+            while (true)
             {
-                try
+                if (localSocket.Available > 0 || remoteSocket.Available > 0)
                 {
-                    while (true)
+                    lastRespondedTime = DateTime.Now;
+                    Byte[] buffer = new Byte[1024];
+                    if (localSocket.Available > 0)
                     {
-                        if (localSocket.Available > 0 || remoteSocket.Available > 0)
-                        {
-                            Byte[] buffer = new Byte[1024];
-                            if (localSocket.Available > 0)
-                            {
-                                Int32 received = localSocket.Receive(buffer, 1024, SocketFlags.None);
-                                if (received != 0)
-                                    remoteSocket.Send(buffer, 0, received, SocketFlags.None);
-                            }
-                            if (remoteSocket.Available > 0)
-                            {
-                                Int32 received = remoteSocket.Receive(buffer, 1024, SocketFlags.None);
-                                if (received != 0)
-                                    localSocket.Send(buffer, 0, received, SocketFlags.None);
-                            }
-                        }
-                        else await Task.Delay(200);
+                        Int32 received = localSocket.Receive(buffer, 1024, SocketFlags.None);
+                        remoteSocket.Send(buffer, 0, received, SocketFlags.None);
+                    }
+                    if (remoteSocket.Available > 0)
+                    {
+                        Int32 received = remoteSocket.Receive(buffer, 1024, SocketFlags.None);
+                        localSocket.Send(buffer, 0, received, SocketFlags.None);
                     }
                 }
-                catch (SocketException)
+                else
                 {
-                    localSocket.Close();
-                    remoteSocket.Close();
-                    localSocket.Dispose();
-                    remoteSocket.Dispose();
-                    Console.WriteLine("HTTPS data tunnel closed");
+                    TimeSpan span = (DateTime.Now - lastRespondedTime);
+                    if (span.TotalMilliseconds < timeout)
+                        await Task.Delay(200);
+                    else
+                        break;
                 }
-                catch (ObjectDisposedException)
-                {
-
-                }
-            });
+            }
+            //});
         }
 
         async Task writeStreamToSocket(Socket socket, MemoryStream stream)
@@ -195,7 +188,8 @@ namespace Lancer
 
         public async Task Request(Socket socket)
         {
-            Console.WriteLine("New task accepted");// (socket.RemoteEndPoint as IPEndPoint).Address);
+            Int32 connectionId = r.Next(0, 65535);
+            // (socket.RemoteEndPoint as IPEndPoint).Address);
             MemoryStream contentStream = new MemoryStream();
             String headerstr = receiveHttpMessage(socket, contentStream);
 
@@ -207,14 +201,14 @@ namespace Lancer
                 targeturi = new Uri(heads[1]);
             else
                 targeturi = new Uri("protocol://" + heads[1]);//just for getting local path. currently no support for HTTPS. HTTP tunneling required.
+            Socket requestSocket;
             if (heads[0] == "CONNECT")
             {
                 socket.Send(Encoding.UTF8.GetBytes("HTTP/1.0 200 Connection established\r\n\r\n"));
-                Socket requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
+                requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
                 requestSocket.NoDelay = true;
                 requestSocket.Connect(targeturi.Host, targeturi.Port);
-                Console.WriteLine(String.Format("HTTPS data tunnel opened: {0}", heads[1]));
-                makeDataTunnel(socket, requestSocket);
+                Console.WriteLine(String.Format("New: Encrypted\tConnection: {0}\r\n\t{1}", connectionId, heads[1]));
             }
             else
             {
@@ -236,17 +230,20 @@ namespace Lancer
 
                 String path = targeturi.PathAndQuery;
 
-                Console.WriteLine(String.Format("Process - {0}", requests[0]));
+                Console.WriteLine(String.Format("New: Normal\tConnection: {0}\r\n\t{1}", connectionId, requests[0]));
 
                 String newHead = String.Join(" ", heads[0], path, heads[2]);
 
-                Socket requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
+                requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
                 requestSocket.NoDelay = true;
-                requestSocket.Connect(targeturi.Host, targeturi.Port);
+                requestSocket.ReceiveTimeout = requestSocket.SendTimeout = 60000;
+                if (targeturi.Host.Length > 0)
+                    requestSocket.Connect(targeturi.Host, targeturi.Port);
+                else
+                    requestSocket.Connect(proxyHost, 80);
 
                 requestSocket.Send(Encoding.UTF8.GetBytes(newHead + "\r\nHost: "));
                 {
-                    Random r = new Random();
                     String remaining = proxyHost;
                     Int32 i = 1;
                     while (remaining.Length > 0)
@@ -268,22 +265,39 @@ namespace Lancer
                 requestSocket.Send(Encoding.UTF8.GetBytes("\r\n" + String.Join("\r\n", sRequests) + "\r\n\r\n"));
                 if (contentStream.Length > 0)
                     await writeStreamToSocket(requestSocket, contentStream);
-
-                while (true)
-                {
-                    Byte[] buffer = new Byte[1024];
-                    Int32 received = requestSocket.Receive(buffer);
-                    socket.Send(buffer, received, SocketFlags.None);
-                    if (received == 0)
-                        break;
-                }
-                requestSocket.Close();
-                requestSocket.Dispose();
-
-                Console.WriteLine("Task done");
-                socket.Close();
-                socket.Dispose();
                 contentStream.Dispose();
+
+                //while (true)
+                //{
+                //    Byte[] buffer = new Byte[1024];
+                //    Int32 received = requestSocket.Receive(buffer);
+                //    String str = Encoding.UTF8.GetString(buffer);
+                //    socket.Send(buffer, received, SocketFlags.None);
+                //    if (received == 0)
+                //        break;
+                //}
+                //requestSocket.Close();
+                //requestSocket.Dispose();
+
+                //Console.WriteLine("Task done");
+                //socket.Close();
+                //socket.Dispose();
+            }
+            try
+            {
+                await makeDataTunnel(socket, requestSocket, 60000);
+                Console.WriteLine(String.Format("Closed: Type 1\tConnection: {0}", connectionId));
+            }
+            catch (SocketException)
+            {
+                Console.WriteLine(String.Format("Closed: Type 2\tConnection: {0}", connectionId));
+            }
+            finally
+            {
+                socket.Close();
+                requestSocket.Close();
+                socket.Dispose();
+                requestSocket.Dispose();
             }
         }
     }
