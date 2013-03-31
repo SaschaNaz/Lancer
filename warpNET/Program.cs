@@ -45,7 +45,7 @@ namespace Lancer
     class Server
     {
         Regex RContentLength = new Regex("\r\nContent-Length: ([0-9]+)\r\n");
-        Regex RConnection = new Regex("\r\nConnection: (.+)\r\n");
+        Regex RConnection = new Regex("\r\nID: (.+)\r\n");
 
         IPAddress hostname;
         Int32 port;
@@ -99,29 +99,32 @@ namespace Lancer
                 Byte[] buffer = new Byte[1024];
                 //List<ArraySegment<Byte>> buffer = new List<ArraySegment<Byte>>();
                 Int32 received = socket.Receive(buffer);
-                for (Int32 i = 0; i < received; i++)
-                {
-                    if (endcounter != 4)
+                if (received > 0)
+                    for (Int32 i = 0; i < received; i++)
                     {
-                        switch (buffer[i])
+                        if (endcounter != 4)
                         {
-                            case 0x0D:
-                                if (endcounter == 0 || endcounter == 2)
-                                    endcounter++;
-                                break;
-                            case 0x0A:
-                                if (endcounter == 1 || endcounter == 3)
-                                    endcounter++;
-                                break;
-                            default:
-                                endcounter = 0;
-                                break;
+                            switch (buffer[i])
+                            {
+                                case 0x0D:
+                                    if (endcounter == 0 || endcounter == 2)
+                                        endcounter++;
+                                    break;
+                                case 0x0A:
+                                    if (endcounter == 1 || endcounter == 3)
+                                        endcounter++;
+                                    break;
+                                default:
+                                    endcounter = 0;
+                                    break;
+                            }
+                            headerbytes.Add(buffer[i]);
                         }
-                        headerbytes.Add(buffer[i]);
+                        else
+                            stream.WriteByte(buffer[i]);
                     }
-                    else
-                        stream.WriteByte(buffer[i]);
-                }
+                else
+                    break;
             }
             String headerstr = Encoding.UTF8.GetString(headerbytes.ToArray());
             Match lengthm = RContentLength.Match(headerstr);
@@ -191,9 +194,18 @@ namespace Lancer
             Int32 connectionId = r.Next(0, 65535);
             // (socket.RemoteEndPoint as IPEndPoint).Address);
             MemoryStream contentStream = new MemoryStream();
+            Console.WriteLine(String.Format("New request\tID: {0}", connectionId));
             String headerstr = receiveHttpMessage(socket, contentStream);
 
             String[] requests = headerstr.TrimEnd('\r', '\n').Split(new String[] { "\r\n" }, StringSplitOptions.None);
+            if (requests[0].Length == 0)
+            {
+                Console.WriteLine(String.Format("Invalid connection request. Ignored. ID:{0}", connectionId));
+                contentStream.Dispose();
+                socket.Close();
+                socket.Dispose();
+                return;
+            }
 
             String[] heads = requests[0].Split(' ');
             Uri targeturi;
@@ -208,7 +220,7 @@ namespace Lancer
                 requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
                 requestSocket.NoDelay = true;
                 requestSocket.Connect(targeturi.Host, targeturi.Port);
-                Console.WriteLine(String.Format("New: Encrypted\tConnection: {0}\r\n\t{1}", connectionId, heads[1]));
+                Console.WriteLine(String.Format("Encrypted connection\tID: {0}\r\n\t{1}", connectionId, heads[1]));
             }
             else
             {
@@ -230,7 +242,7 @@ namespace Lancer
 
                 String path = targeturi.PathAndQuery;
 
-                Console.WriteLine(String.Format("New: Normal\tConnection: {0}\r\n\t{1}", connectionId, requests[0]));
+                Console.WriteLine(String.Format("Normal connection\tID: {0}\r\n\t{1}", connectionId, requests[0]));
 
                 String newHead = String.Join(" ", heads[0], path, heads[2]);
 
@@ -286,11 +298,11 @@ namespace Lancer
             try
             {
                 await makeDataTunnel(socket, requestSocket, 60000);
-                Console.WriteLine(String.Format("Closed: Type 1\tConnection: {0}", connectionId));
+                Console.WriteLine(String.Format("Closed: Type 1\tID: {0}", connectionId));
             }
             catch (SocketException)
             {
-                Console.WriteLine(String.Format("Closed: Type 2\tConnection: {0}", connectionId));
+                Console.WriteLine(String.Format("Closed: Type 2\tID: {0}", connectionId));
             }
             finally
             {
