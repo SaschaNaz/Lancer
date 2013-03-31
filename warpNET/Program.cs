@@ -44,7 +44,6 @@ namespace Lancer
 {
     class Server
     {
-        Regex RHost = new Regex("[^:+]{0,}:([0-9]{1,5})");
         Regex RContentLength = new Regex("\r\nContent-Length: ([0-9]+)\r\n");
         Regex RConnection = new Regex("\r\nConnection: (.+)\r\n");
 
@@ -219,7 +218,6 @@ namespace Lancer
             }
             else
             {
-                #region data tunneling
                 String proxyHost = String.Empty;
                 List<String> sRequests = new List<String>();
                 for (Int32 i = 1; i < requests.Length; i++)
@@ -242,23 +240,9 @@ namespace Lancer
 
                 String newHead = String.Join(" ", heads[0], path, heads[2]);
 
-                Match hostm = RHost.Match(heads[1]);
-                String host;
-                UInt16 port;
-                if (hostm.Groups.Count > 0 && hostm.Groups[0].Value.Length != 0)
-                {
-                    String[] splitTarget = hostm.Groups[0].Value.Split(':');
-                    host = splitTarget[0];
-                    port = Convert.ToUInt16(splitTarget[1]);
-                }
-                else
-                {
-                    host = proxyHost;
-                    port = 80;
-                }
                 Socket requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
                 requestSocket.NoDelay = true;
-                requestSocket.Connect(host, port);
+                requestSocket.Connect(targeturi.Host, targeturi.Port);
 
                 requestSocket.Send(Encoding.UTF8.GetBytes(newHead + "\r\nHost: "));
                 {
@@ -295,7 +279,6 @@ namespace Lancer
                 }
                 requestSocket.Close();
                 requestSocket.Dispose();
-                #endregion
 
                 Console.WriteLine("Task done");
                 socket.Close();
