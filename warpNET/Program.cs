@@ -59,7 +59,6 @@ namespace Lancer
         public void Start()
         {
             Socket socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
-            socket.NoDelay = true;
             try
             {
                 socket.Bind(new System.Net.IPEndPoint(hostname, port));//[::1]
@@ -127,17 +126,17 @@ namespace Lancer
                     break;
             }
             String headerstr = Encoding.UTF8.GetString(headerbytes.ToArray());
-            Match lengthm = RContentLength.Match(headerstr);
-            if (lengthm.Groups.Count > 0 && lengthm.Groups[0].Value.Length != 0)
-            {
-                Int32 length = Convert.ToInt32(lengthm.Groups[0].Value.Substring(18).TrimEnd('\r', '\n'));
-                while (length != stream.Length)
-                {
-                    Byte[] buffer = new Byte[1024];
-                    Int32 received = socket.Receive(buffer);
-                    stream.Write(buffer, 0, received);
-                }
-            }
+            //Match lengthm = RContentLength.Match(headerstr);
+            //if (lengthm.Groups.Count > 0 && lengthm.Groups[0].Value.Length != 0)
+            //{
+            //    Int32 length = Convert.ToInt32(lengthm.Groups[0].Value.Substring(18).TrimEnd('\r', '\n'));
+            //    while (length != stream.Length)
+            //    {
+            //        Byte[] buffer = new Byte[1024];
+            //        Int32 received = socket.Receive(buffer);
+            //        stream.Write(buffer, 0, received);
+            //    }
+            //}
             return headerstr;
         }
 
@@ -212,7 +211,7 @@ namespace Lancer
             if (heads[1].Contains("://"))
                 targeturi = new Uri(heads[1]);
             else
-                targeturi = new Uri("protocol://" + heads[1]);//just for getting local path. currently no support for HTTPS. HTTP tunneling required.
+                targeturi = new Uri("protocol://" + heads[1]);
             Socket requestSocket;
             if (heads[0] == "CONNECT")
             {
@@ -251,10 +250,13 @@ namespace Lancer
                 requestSocket.ReceiveTimeout = requestSocket.SendTimeout = 60000;
                 if (targeturi.Host.Length > 0)
                     requestSocket.Connect(targeturi.Host, targeturi.Port);
-                else
+                else if (proxyHost.Length > 0)
                     requestSocket.Connect(proxyHost, 80);
+                else
+                    requestSocket.Connect(IPAddress.Parse("127.0.0.1"), 80);
 
                 requestSocket.Send(Encoding.UTF8.GetBytes(newHead + "\r\nHost: "));
+                //String sent = "";
                 {
                     String remaining = proxyHost;
                     Int32 i = 1;
@@ -264,11 +266,13 @@ namespace Lancer
                         if (remaining.Length > i)
                         {
                             requestSocket.Send(Encoding.UTF8.GetBytes(remaining.Substring(0, i)));
+                            //sent += remaining.Substring(0, i);
                             remaining = remaining.Substring(i);
                         }
                         else
                         {
                             requestSocket.Send(Encoding.UTF8.GetBytes(remaining));
+                            //sent += remaining;
                             remaining = String.Empty;
                         }
                         i = r.Next(2, 5);
