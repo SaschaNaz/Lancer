@@ -27,6 +27,13 @@
  * 
  * HTTP Tunneling is implemented as:
  * http://www.web-cache.com/Writings/Internet-Drafts/draft-luotonen-web-proxy-tunneling-01.txt
+ * 
+ * 8 Connections http://www.w3.org/Protocols/rfc2616/rfc2616-sec8.html
+ * 14 Header Field Definitions http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html
+ * 9 Method Definitions http://www.w3.org/Protocols/rfc2616/rfc2616-sec9.html
+ * 5 Request http://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html
+ * HTTP 1.1 http://www.w3.org/Protocols/rfc2616/rfc2616.html
+ * Issues: Persistent connections http://www.w3.org/Protocols/HTTP/Issues/http-persist.html
  */
 
 using System;
@@ -42,10 +49,89 @@ using System.IO;
 
 namespace Lancer
 {
+    class SocketHttpReader
+    {
+        Queue<Byte> queue = new Queue<Byte>();
+        Socket socket;
+        public Int32 Timeout = 60000;
+
+        public SocketHttpReader(Socket socket)
+        {
+            this.socket = socket;
+        }
+
+        public async Task LoadHttpMessageAsync()
+        {
+            List<Byte> headerbytes = new List<Byte>();
+            UInt16 endcounter = 0;
+            while (endcounter != 4)
+            {
+                if (queue.Count > 0)
+                {
+                    Byte b = queue.Dequeue();
+                    switch (b)
+                    {
+                        case 0x0D:
+                            if (endcounter == 0 || endcounter == 2)
+                                endcounter++;
+                            break;
+                        case 0x0A:
+                            if (endcounter == 1 || endcounter == 3)
+                                endcounter++;
+                            break;
+                        default:
+                            endcounter = 0;
+                            break;
+                    }
+                    headerbytes.Add(b);
+                }
+            }
+        }
+
+        public void Start()
+        {
+            new Task(async delegate()
+                {
+                    DateTime lastRespondedTime = DateTime.Now;
+                    //Parallel.Invoke(
+                    //async delegate()
+                    //{
+                    while (true)
+                    {
+                        if (socket.Available > 0)
+                        {
+                            lastRespondedTime = DateTime.Now;
+                            Byte[] buffer = new Byte[1024];
+                            Int32 received = socket.Receive(buffer);
+                            for (Int32 i = 0; i < received; i++)
+                                queue.Enqueue(buffer[i]);
+                        }
+                        else
+                        {
+                            TimeSpan span = (DateTime.Now - lastRespondedTime);
+                            if (span.TotalMilliseconds < Timeout)
+                                await Task.Delay(200);
+                            else
+                                break;
+                        }
+                    }
+                }).Start();
+            //});
+        }
+    }
+    class RawHttpMessage
+    {
+        public readonly String MethodString;
+        public readonly IReadOnlyDictionary<String, String> HttpHeaders;
+
+        public RawHttpMessage(String str)
+        {
+        }
+    }
+
     class Server
     {
-        Regex RContentLength = new Regex("\r\nContent-Length: ([0-9]+)\r\n");
-        Regex RConnection = new Regex("\r\nID: (.+)\r\n");
+        Regex RConnection = new Regex("\r\nConnection: (.+)\r\n");
 
         IPAddress hostname;
         Int32 port;
@@ -65,11 +151,11 @@ namespace Lancer
             }
             catch
             {
-                Console.WriteLine(String.Format("!!! Failed to bind server at [{0}:{1}]", hostname, port)); 
+                Console.WriteLine(String.Format("!!! Failed to bind server at [{0}:{1}]", hostname, port));
                 return;
             }
-            Console.WriteLine(String.Format("Server bound at [{0}:{1}].", hostname, port)); 
-            socket.Listen(128);
+            Console.WriteLine(String.Format("Server bound at [{0}:{1}].", hostname, port));
+            socket.Listen(8192);
 
             while (true)
             {
@@ -196,10 +282,10 @@ namespace Lancer
             Console.WriteLine(String.Format("New request\tID: {0}", connectionId));
             String headerstr = receiveHttpMessage(socket, contentStream);
 
-            String[] requests = headerstr.TrimEnd('\r', '\n').Split(new String[] { "\r\n" }, StringSplitOptions.None);
-            if (requests[0].Length == 0)
+            String[] requests = headerstr.Split(new String[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
+            if (requests.Length == 0)
             {
-                Console.WriteLine(String.Format("Invalid connection request. Ignored. ID:{0}", connectionId));
+                Console.WriteLine(String.Format("Empty connection request. Ignored. ID:{0}", connectionId));
                 contentStream.Dispose();
                 socket.Close();
                 socket.Dispose();
@@ -212,16 +298,16 @@ namespace Lancer
                 targeturi = new Uri(heads[1]);
             else
                 targeturi = new Uri("protocol://" + heads[1]);
-            Socket requestSocket;
+            Socket requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
+            requestSocket.NoDelay = true;
+            requestSocket.ReceiveTimeout = requestSocket.SendTimeout = 60000;
             if (heads[0] == "CONNECT")
             {
                 socket.Send(Encoding.UTF8.GetBytes("HTTP/1.0 200 Connection established\r\n\r\n"));
-                requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
-                requestSocket.NoDelay = true;
                 requestSocket.Connect(targeturi.Host, targeturi.Port);
                 Console.WriteLine(String.Format("Encrypted connection\tID: {0}\r\n\t{1}", connectionId, heads[1]));
             }
-            else
+            else if (new String[] { "protocol", "http" }.Contains(targeturi.Scheme))
             {
                 String proxyHost = String.Empty;
                 List<String> sRequests = new List<String>();
@@ -244,11 +330,7 @@ namespace Lancer
                 Console.WriteLine(String.Format("Normal connection\tID: {0}\r\n\t{1}", connectionId, requests[0]));
 
                 String newHead = String.Join(" ", heads[0], path, heads[2]);
-
-                requestSocket = new Socket(SocketType.Stream, ProtocolType.IP);
-                requestSocket.NoDelay = true;
-                requestSocket.ReceiveTimeout = requestSocket.SendTimeout = 60000;
-                if (targeturi.Host.Length > 0)
+                if (targeturi.Host.Length > 0)//http://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html Actually it has to be an absolute URI
                     requestSocket.Connect(targeturi.Host, targeturi.Port);
                 else if (proxyHost.Length > 0)
                     requestSocket.Connect(proxyHost, 80);
@@ -256,7 +338,6 @@ namespace Lancer
                     requestSocket.Connect(IPAddress.Parse("127.0.0.1"), 80);
 
                 requestSocket.Send(Encoding.UTF8.GetBytes(newHead + "\r\nHost: "));
-                //String sent = "";
                 {
                     String remaining = proxyHost;
                     Int32 i = 1;
@@ -266,13 +347,11 @@ namespace Lancer
                         if (remaining.Length > i)
                         {
                             requestSocket.Send(Encoding.UTF8.GetBytes(remaining.Substring(0, i)));
-                            //sent += remaining.Substring(0, i);
                             remaining = remaining.Substring(i);
                         }
                         else
                         {
                             requestSocket.Send(Encoding.UTF8.GetBytes(remaining));
-                            //sent += remaining;
                             remaining = String.Empty;
                         }
                         i = r.Next(2, 5);
@@ -282,23 +361,16 @@ namespace Lancer
                 if (contentStream.Length > 0)
                     await writeStreamToSocket(requestSocket, contentStream);
                 contentStream.Dispose();
-
-                //while (true)
-                //{
-                //    Byte[] buffer = new Byte[1024];
-                //    Int32 received = requestSocket.Receive(buffer);
-                //    String str = Encoding.UTF8.GetString(buffer);
-                //    socket.Send(buffer, received, SocketFlags.None);
-                //    if (received == 0)
-                //        break;
-                //}
-                //requestSocket.Close();
-                //requestSocket.Dispose();
-
-                //Console.WriteLine("Task done");
-                //socket.Close();
-                //socket.Dispose();
             }
+            else
+            {
+                Console.WriteLine(String.Format("FTP connection\tID: {0}\r\n\t{1}\r\n\tUnfortunately FTP connection is unsupported. Ignored.", connectionId, requests[0]));
+                contentStream.Dispose();
+                socket.Close();
+                socket.Dispose();
+                return;
+            }
+
             try
             {
                 await makeDataTunnel(socket, requestSocket, 60000);
