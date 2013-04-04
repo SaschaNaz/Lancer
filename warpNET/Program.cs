@@ -54,38 +54,52 @@ namespace Lancer
         Queue<Byte> queue = new Queue<Byte>();
         Socket socket;
         public Int32 Timeout = 60000;
+        readonly Object locker;
 
         public SocketHttpReader(Socket socket)
         {
             this.socket = socket;
         }
 
-        public async Task LoadHttpMessageAsync()
+        public RawHttpMessage LoadHttpMessage()
         {
             List<Byte> headerbytes = new List<Byte>();
             UInt16 endcounter = 0;
-            while (endcounter != 4)
+            RawHttpHeader header;
+            lock (locker)
             {
-                if (queue.Count > 0)
+                while (endcounter != 4)
                 {
-                    Byte b = queue.Dequeue();
-                    switch (b)
+                    if (queue.Count > 0)
                     {
-                        case 0x0D:
-                            if (endcounter == 0 || endcounter == 2)
-                                endcounter++;
-                            break;
-                        case 0x0A:
-                            if (endcounter == 1 || endcounter == 3)
-                                endcounter++;
-                            break;
-                        default:
-                            endcounter = 0;
-                            break;
+                        Byte b = queue.Dequeue();
+                        switch (b)
+                        {
+                            case 0x0D:
+                                if (endcounter == 0 || endcounter == 2)
+                                    endcounter++;
+                                break;
+                            case 0x0A:
+                                if (endcounter == 1 || endcounter == 3)
+                                    endcounter++;
+                                break;
+                            default:
+                                endcounter = 0;
+                                break;
+                        }
+                        headerbytes.Add(b);
                     }
-                    headerbytes.Add(b);
                 }
+
+                header = new RawHttpHeader(Encoding.UTF8.GetString(headerbytes.ToArray()));
+
+                if (header.Headers["Content-Length"] != null)//http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.4
+                {
+
+                }
+                //download content
             }
+            return new RawHttpMessage(header);
         }
 
         public void Start()
@@ -116,16 +130,46 @@ namespace Lancer
                         }
                     }
                 }).Start();
-            //});
         }
     }
-    class RawHttpMessage
+
+    class RawHttpHeader
     {
         public readonly String MethodString;
-        public readonly IReadOnlyDictionary<String, String> HttpHeaders;
+        public readonly IReadOnlyDictionary<String, String> Headers;
 
-        public RawHttpMessage(String str)
+        public RawHttpHeader(String str)
         {
+            String[] requests = str.Split(new String[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
+            MethodString = requests[0];
+            if (requests.Length > 1)
+            {
+                Dictionary<String, String> dictionary = new Dictionary<String, String>();
+                Char[] ch = new Char[] { ',' };
+                for (Int32 i = 1; i < requests.Length; i++)
+                {
+                    String[] splitted = requests[i].Split(ch, 2);
+                    dictionary.Add(splitted[0], splitted[1]);
+                }
+                Headers = new System.Collections.ObjectModel.ReadOnlyDictionary<String, String>(dictionary);
+            }
+        }
+    }
+
+    class RawHttpMessage
+    {
+        public readonly RawHttpHeader Header;
+        public readonly MemoryStream Content;
+
+        public RawHttpMessage(RawHttpHeader header, MemoryStream content)
+        {
+            Header = header;
+            Content = content;
+        }
+
+        public RawHttpMessage(RawHttpHeader header)
+        {
+            Header = header;
         }
     }
 
